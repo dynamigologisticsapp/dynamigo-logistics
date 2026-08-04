@@ -1,15 +1,22 @@
 import * as Auth from "@/lib/_core/auth";
 import { trpc } from "@/lib/trpc";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
 type AuthMode = "login" | "signup";
+type AuthenticatedUser = Pick<Auth.User, "id" | "openId" | "name" | "email" | "loginMethod" | "role" | "accountStatus" | "lastSignedIn">;
 
 export function AccountGate({ children }: { children: React.ReactNode }) {
   const utils = trpc.useUtils();
+  const [optimisticUser, setOptimisticUser] = useState<AuthenticatedUser | null>(null);
   const meQuery = trpc.auth.me.useQuery(undefined, {
     retry: false,
   });
+
+  useEffect(() => {
+    if (!meQuery.data) return;
+    setOptimisticUser(meQuery.data);
+  }, [meQuery.data]);
 
   const refreshAccount = async () => {
     await utils.auth.me.invalidate();
@@ -17,6 +24,7 @@ export function AccountGate({ children }: { children: React.ReactNode }) {
   };
 
   const signOut = async () => {
+    setOptimisticUser(null);
     await Auth.removeSessionToken();
     await Auth.clearUserInfo();
     await refreshAccount();
@@ -31,10 +39,17 @@ export function AccountGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  const user = meQuery.data;
+  const user = meQuery.data ?? optimisticUser;
 
   if (!user) {
-    return <AccountScreen onSignedIn={refreshAccount} />;
+    return (
+      <AccountScreen
+        onSignedIn={async (signedInUser) => {
+          setOptimisticUser(signedInUser);
+          await refreshAccount();
+        }}
+      />
+    );
   }
 
   if (user.accountStatus === "pending") {
@@ -48,7 +63,7 @@ export function AccountGate({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function AccountScreen({ onSignedIn }: { onSignedIn: () => Promise<void> }) {
+function AccountScreen({ onSignedIn }: { onSignedIn: (user: AuthenticatedUser) => Promise<void> }) {
   const [mode, setMode] = useState<AuthMode>("login");
   const [businessName, setBusinessName] = useState("");
   const [name, setName] = useState("");
@@ -70,16 +85,17 @@ function AccountScreen({ onSignedIn }: { onSignedIn: () => Promise<void> }) {
         : await loginMutation.mutateAsync({ email, password });
 
       await Auth.setSessionToken(result.sessionToken);
-      await Auth.setUserInfo({
+      const signedInUser = {
         ...result.user,
         lastSignedIn: new Date(result.user.lastSignedIn),
-      });
+      };
+      await Auth.setUserInfo(signedInUser);
       setNotice(
         result.user.accountStatus === "pending"
           ? "Account created. It is waiting for admin activation."
           : "Signed in successfully.",
       );
-      await onSignedIn();
+      await onSignedIn(signedInUser);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Account request failed.";
       setNotice(message);
