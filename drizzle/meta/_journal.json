@@ -78,6 +78,13 @@
       "when": 1784496600000,
       "tag": "0010_driver_helper_coordinates",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "5",
+      "when": 1784665020000,
+      "tag": "0011_fractional_sofa_counts",
+      "breakpoints": true
     }
   ]
 }
