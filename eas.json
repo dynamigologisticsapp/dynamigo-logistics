@@ -6,12 +6,18 @@
   "build": {
     "preview": {
       "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://sublime-courage-production-bad7.up.railway.app"
+      },
       "ios": {
         "resourceClass": "m-medium"
       }
     },
     "production": {
       "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://sublime-courage-production-bad7.up.railway.app"
+      },
       "ios": {
         "resourceClass": "m-medium"
       }
