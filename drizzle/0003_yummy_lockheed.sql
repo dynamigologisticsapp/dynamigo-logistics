@@ -1,0 +1,1 @@
+ALTER TABLE `businessSettings` ADD `unitAddress` text NOT NULL;
