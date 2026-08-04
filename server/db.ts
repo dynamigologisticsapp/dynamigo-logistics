@@ -111,6 +111,107 @@ export async function getUserByOpenId(openId: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+export async function getUserByEmail(email: string) {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot get user by email: database not available");
+    return undefined;
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const result = await db.select().from(users).where(eq(users.email, normalizedEmail)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getUserCount(): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+
+  try {
+    const result = await db.execute(sql`SELECT COUNT(*) AS count FROM users`);
+    const rows = rowsFromRawResult<{ count: number | string }>(result);
+    return Number(rows[0]?.count ?? 0);
+  } catch (error) {
+    console.error("[Database] Failed to count users:", error);
+    return 0;
+  }
+}
+
+export async function getAdminUserCount(): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+
+  try {
+    const result = await db.execute(sql`SELECT COUNT(*) AS count FROM users WHERE role = 'admin'`);
+    const rows = rowsFromRawResult<{ count: number | string }>(result);
+    return Number(rows[0]?.count ?? 0);
+  } catch (error) {
+    console.error("[Database] Failed to count admin users:", error);
+    return 0;
+  }
+}
+
+export async function createEmailUser(input: {
+  openId: string;
+  name: string;
+  email: string;
+  passwordHash: string;
+  role: "user" | "admin";
+  accountStatus: "pending" | "active" | "suspended" | "closed";
+}) {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot create email user: database not available");
+    return null;
+  }
+
+  const now = new Date();
+  const user: typeof users.$inferInsert = {
+    openId: input.openId,
+    name: input.name,
+    email: input.email.trim().toLowerCase(),
+    loginMethod: "email",
+    passwordHash: input.passwordHash,
+    role: input.role,
+    accountStatus: input.accountStatus,
+    passwordResetRequired: false,
+    lastSignedIn: now,
+  };
+
+  await db.insert(users).values(user);
+  const saved = await getUserByOpenId(input.openId);
+  return saved ?? null;
+}
+
+export async function createBusinessAccount(input: {
+  id: string;
+  name: string;
+  contactName: string;
+  contactEmail: string;
+  contactPhone?: string;
+  status: CustomerAccountStatus;
+}) {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot create business account: database not available");
+    return null;
+  }
+
+  const business: typeof businesses.$inferInsert = {
+    id: input.id,
+    name: input.name,
+    contactName: input.contactName,
+    contactEmail: input.contactEmail.trim().toLowerCase(),
+    contactPhone: input.contactPhone ?? null,
+    status: input.status,
+    activatedAt: input.status === "active" ? new Date() : null,
+  };
+
+  await db.insert(businesses).values(business);
+  const result = await db.select().from(businesses).where(eq(businesses.id, input.id)).limit(1);
+  return result.length > 0 ? result[0] : null;
+}
+
 export type CustomerAccountStatus = "pending" | "trial" | "active" | "suspended" | "closed";
 
 export async function getCustomerAccounts(): Promise<Business[]> {

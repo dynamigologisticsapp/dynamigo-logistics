@@ -57,6 +57,8 @@ function buildUserResponse(
     name: user?.name ?? null,
     email: user?.email ?? null,
     loginMethod: user?.loginMethod ?? null,
+    role: (user as any)?.role ?? "user",
+    accountStatus: (user as any)?.accountStatus ?? "pending",
     lastSignedIn: (user?.lastSignedIn ?? new Date()).toISOString(),
   };
 }

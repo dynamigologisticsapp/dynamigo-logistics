@@ -6,7 +6,9 @@ import { z } from "zod";
 import { cancelJob, completeJob, createHelper, createJob, createVan, createVehicle, deleteHelper, deleteJob, deleteVan, deleteVehicle, getSnapshot, getSelectedVanId, getVans, getVehicles, resetOperations, selectVan, updateDayEndTime, updateDayStartTime, updateHelper, updateJob, updateSettings, updateVan, updateVehicle } from "./operations-store";
 import { buildEnhancedRoutePlan } from "./enhanced-route-planner";
 import { createGeoapifyAddressProvider } from "./geoapify-service";
-import { getCustomerAccounts, updateCustomerAccountStatus } from "./db";
+import { createBusinessAccount, createEmailUser, getAdminUserCount, getCustomerAccounts, getUserByEmail, updateCustomerAccountStatus } from "./db";
+import { hashPassword, verifyPassword } from "./password-auth";
+import { sdk } from "./_core/sdk";
 
 import { TOWN_OPTIONS, type RoutePlan } from "../shared/route-planner";
 
@@ -16,6 +18,24 @@ const jobStatusSchema = z.enum(["scheduled", "cancelled", "completed"]);
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const addressProvider = createGeoapifyAddressProvider();
 const customerAccountStatusSchema = z.enum(["pending", "trial", "active", "suspended", "closed"]);
+const emailSchema = z.string().email().max(320).transform((email) => email.trim().toLowerCase());
+const passwordSchema = z.string().min(8).max(128);
+
+function buildAuthResponse(user: NonNullable<Awaited<ReturnType<typeof getUserByEmail>>>, sessionToken: string) {
+  return {
+    sessionToken,
+    user: {
+      id: user.id,
+      openId: user.openId,
+      name: user.name,
+      email: user.email,
+      loginMethod: user.loginMethod,
+      role: user.role,
+      accountStatus: user.accountStatus,
+      lastSignedIn: user.lastSignedIn.toISOString(),
+    },
+  };
+}
 
 const jobInputSchema = z.object({
   customerName: z.string().min(1).max(120),
@@ -40,6 +60,78 @@ export const appRouter = router({
   system: systemRouter,
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),
+    signup: publicProcedure
+      .input(
+        z.object({
+          businessName: z.string().min(2).max(120),
+          name: z.string().min(2).max(120),
+          email: emailSchema,
+          phone: z.string().min(5).max(30).optional(),
+          password: passwordSchema,
+        }),
+      )
+      .mutation(async ({ input }) => {
+        const existing = await getUserByEmail(input.email);
+        if (existing) {
+          throw new Error("An account already exists for this email.");
+        }
+
+        const isFirstAdmin = (await getAdminUserCount()) === 0;
+        const openId = `email:${input.email}`;
+        const businessId = isFirstAdmin ? "default-business" : `business_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const status = isFirstAdmin ? "active" : "pending";
+        const role = isFirstAdmin ? "admin" : "user";
+
+        if (!isFirstAdmin) {
+          await createBusinessAccount({
+            id: businessId,
+            name: input.businessName,
+            contactName: input.name,
+            contactEmail: input.email,
+            contactPhone: input.phone,
+            status,
+          });
+        }
+
+        const user = await createEmailUser({
+          openId,
+          name: input.name,
+          email: input.email,
+          passwordHash: hashPassword(input.password),
+          role,
+          accountStatus: isFirstAdmin ? "active" : "pending",
+        });
+
+        if (!user) {
+          throw new Error("Account could not be created.");
+        }
+
+        const sessionToken = await sdk.createSessionToken(user.openId, {
+          name: user.name ?? input.name,
+        });
+        return buildAuthResponse(user, sessionToken);
+      }),
+    login: publicProcedure
+      .input(
+        z.object({
+          email: emailSchema,
+          password: passwordSchema,
+        }),
+      )
+      .mutation(async ({ input }) => {
+        const user = await getUserByEmail(input.email);
+        if (!user || !verifyPassword(input.password, user.passwordHash)) {
+          throw new Error("Email or password is incorrect.");
+        }
+        if (user.accountStatus === "closed") {
+          throw new Error("This account has been closed.");
+        }
+
+        const sessionToken = await sdk.createSessionToken(user.openId, {
+          name: user.name ?? input.email,
+        });
+        return buildAuthResponse(user, sessionToken);
+      }),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
