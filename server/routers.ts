@@ -6,7 +6,7 @@ import { z } from "zod";
 import { cancelJob, completeJob, createHelper, createJob, createVan, createVehicle, deleteHelper, deleteJob, deleteVan, deleteVehicle, getSnapshot, getSelectedVanId, getVans, getVehicles, resetOperations, selectVan, updateDayEndTime, updateDayStartTime, updateHelper, updateJob, updateSettings, updateVan, updateVehicle } from "./operations-store";
 import { buildEnhancedRoutePlan } from "./enhanced-route-planner";
 import { createGeoapifyAddressProvider } from "./geoapify-service";
-import { createBusinessAccount, createEmailUser, getAdminUserCount, getCustomerAccounts, getUserByEmail, updateCustomerAccountStatus } from "./db";
+import { createBusinessAccount, createBusinessMembership, createEmailUser, getAdminUserCount, getCustomerAccounts, getUserByEmail, updateCustomerAccountStatus } from "./db";
 import { hashPassword, verifyPassword } from "./password-auth";
 import { sdk } from "./_core/sdk";
 
@@ -105,6 +105,12 @@ export const appRouter = router({
         if (!user) {
           throw new Error("Account could not be created.");
         }
+
+        await createBusinessMembership({
+          businessId,
+          userId: user.id,
+          role: "owner",
+        });
 
         const sessionToken = await sdk.createSessionToken(user.openId, {
           name: user.name ?? input.name,

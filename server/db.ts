@@ -1,6 +1,6 @@
 import { drizzle } from "drizzle-orm/mysql2";
 import { eq, sql } from "drizzle-orm";
-import { InsertUser, businesses, users, jobs, helpers, businessSettings, vans, vehicles, routeOrders, routeOrderHistory, type Business, type Job, type Helper, type BusinessSettings, type Van, type Vehicle, type RouteOrder, type RouteOrderHistory } from "../drizzle/schema";
+import { InsertUser, businessMemberships, businesses, users, jobs, helpers, businessSettings, vans, vehicles, routeOrders, routeOrderHistory, type Business, type Job, type Helper, type BusinessSettings, type Van, type Vehicle, type RouteOrder, type RouteOrderHistory } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -183,6 +183,38 @@ export async function createEmailUser(input: {
   return saved ?? null;
 }
 
+export async function createBusinessMembership(input: {
+  businessId: string;
+  userId: number;
+  role?: "owner" | "manager" | "driver" | "staff";
+}) {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot create business membership: database not available");
+    return null;
+  }
+
+  const membership: typeof businessMemberships.$inferInsert = {
+    id: `membership_${input.businessId}_${input.userId}`,
+    businessId: input.businessId,
+    userId: input.userId,
+    role: input.role ?? "owner",
+  };
+
+  try {
+    await db.insert(businessMemberships).values(membership).onDuplicateKeyUpdate({
+      set: {
+        role: membership.role,
+        updatedAt: new Date(),
+      },
+    });
+    return membership;
+  } catch (error) {
+    console.error("[Database] Failed to create business membership:", error);
+    return null;
+  }
+}
+
 export async function createBusinessAccount(input: {
   id: string;
   name: string;
@@ -270,7 +302,18 @@ export async function updateCustomerAccountStatus(input: {
   try {
     await db.update(businesses).set(update).where(eq(businesses.id, input.businessId));
     const result = await db.select().from(businesses).where(eq(businesses.id, input.businessId)).limit(1);
-    return result.length > 0 ? result[0] : null;
+    const business = result.length > 0 ? result[0] : null;
+
+    if (business?.contactEmail) {
+      const nextUserStatus =
+        input.status === "trial" || input.status === "active" ? "active" : input.status;
+      await db
+        .update(users)
+        .set({ accountStatus: nextUserStatus, updatedAt: now })
+        .where(eq(users.email, business.contactEmail.trim().toLowerCase()));
+    }
+
+    return business;
   } catch (error) {
     console.error("[Database] Failed to update customer account:", error);
     return null;
