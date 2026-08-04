@@ -34,6 +34,7 @@ const PANEL_TITLES = {
 } as const;
 
 type PanelKey = keyof typeof PANEL_TITLES;
+type CustomerStatus = "pending" | "trial" | "active" | "suspended" | "closed";
 
 function inferTownIdFromAddress(address: string, fallback: TownId = "falkirk"): TownId {
   const addressLower = address.toLowerCase();
@@ -116,6 +117,9 @@ export function OperationsConsole({ panel, setIsRouteStale: propsSetIsRouteStale
       retry: 1,
     },
   );
+  const authQuery = trpc.auth.me.useQuery(undefined, {
+    retry: false,
+  });
 
   const refreshSnapshot = async () => {
     await utils.operations.snapshot.invalidate({ dateKey });
@@ -424,7 +428,13 @@ export function OperationsConsole({ panel, setIsRouteStale: propsSetIsRouteStale
         ) : null}
 
         {panel === "settings" ? (
-          <SettingsPanel snapshot={snapshot} dateKey={dateKey} onIncreaseCapacity={incrementCapacity} onRefresh={refreshSnapshot} />
+          <SettingsPanel
+            snapshot={snapshot}
+            dateKey={dateKey}
+            currentUser={authQuery.data ?? null}
+            onIncreaseCapacity={incrementCapacity}
+            onRefresh={refreshSnapshot}
+          />
         ) : null}
       </ScrollView>
     </ScreenContainer>
@@ -1109,11 +1119,13 @@ function PlannerPanel({
 function SettingsPanel({
   snapshot,
   dateKey,
+  currentUser,
   onIncreaseCapacity,
   onRefresh,
 }: {
   snapshot: OperationsSnapshot | undefined;
   dateKey: string;
+  currentUser: { role: "user" | "admin" } | null;
   onIncreaseCapacity: () => Promise<void>;
   onRefresh: () => Promise<void>
 }) {
@@ -1188,6 +1200,16 @@ function SettingsPanel({
   }, [isBusinessEditMode, snapshot]);
 
   const utils = trpc.useUtils();
+  const isAdmin = currentUser?.role === "admin";
+  const customersQuery = trpc.admin.customers.useQuery(undefined, {
+    enabled: isAdmin,
+    retry: false,
+  });
+  const updateCustomerStatusMutation = trpc.admin.updateCustomerStatus.useMutation({
+    onSuccess: async () => {
+      await utils.admin.customers.invalidate();
+    },
+  });
   const updateSettingsMutation = trpc.operations.updateSettings.useMutation();
   const createVanMutation = trpc.operations.createVan.useMutation({
     onSuccess: async () => {
@@ -1597,6 +1619,38 @@ function SettingsPanel({
     }
   };
 
+  const handleCustomerStatusChange = (
+    businessId: string,
+    status: CustomerStatus,
+  ) => {
+    const labels: Record<CustomerStatus, string> = {
+      pending: "move this customer back to pending",
+      trial: "activate a 7 day trial for this customer",
+      active: "mark this customer as active",
+      suspended: "suspend this customer",
+      closed: "close this customer account",
+    };
+
+    Alert.alert("Confirm account change", `Are you sure you want to ${labels[status]}?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: status === "closed" || status === "suspended" ? "Confirm" : "Yes",
+        style: status === "closed" || status === "suspended" ? "destructive" : "default",
+        onPress: async () => {
+          try {
+            await updateCustomerStatusMutation.mutateAsync({
+              businessId,
+              status,
+              trialDays: status === "trial" ? 7 : undefined,
+            });
+          } catch {
+            Alert.alert("Error", "Customer account could not be updated.");
+          }
+        },
+      },
+    ]);
+  };
+
   if (!snapshot) {
     return <StatusBanner tone="info" text="Settings will appear once the day snapshot is loaded." />;
   }
@@ -1604,6 +1658,17 @@ function SettingsPanel({
   // Section-based management view
   return (
     <>
+      {isAdmin ? (
+        <AdminCustomersSection
+          customers={customersQuery.data ?? []}
+          loading={customersQuery.isLoading}
+          error={customersQuery.error?.message}
+          updating={updateCustomerStatusMutation.isPending}
+          onChangeStatus={handleCustomerStatusChange}
+          onRefresh={() => customersQuery.refetch()}
+        />
+      ) : null}
+
       <SectionCard
         title="Business Information"
         subtitle={isBusinessEditMode ? "Update your business details and operational settings." : "Your business details and operational settings."}
@@ -2281,6 +2346,131 @@ function SettingsPanel({
   );
 }
 
+function AdminCustomersSection({
+  customers,
+  loading,
+  error,
+  updating,
+  onChangeStatus,
+  onRefresh,
+}: {
+  customers: Array<{
+    id: string;
+    name: string;
+    contactName: string | null;
+    contactEmail: string | null;
+    contactPhone: string | null;
+    status: CustomerStatus;
+    trialEndsAt: Date | string | null;
+    activatedAt: Date | string | null;
+    adminNotes: string | null;
+  }>;
+  loading: boolean;
+  error?: string;
+  updating: boolean;
+  onChangeStatus: (businessId: string, status: CustomerStatus) => void;
+  onRefresh: () => void;
+}) {
+  const formatDate = (value: Date | string | null) => {
+    if (!value) return "Not set";
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return "Not set";
+    return date.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  };
+
+  return (
+    <SectionCard
+      title="Admin Customers"
+      subtitle="Activate trial accounts, suspend access, and keep customer records tidy."
+      editButton={(
+        <Pressable style={({ pressed }) => [styles.smallNeutralButton, pressed && styles.buttonPressed]} onPress={onRefresh}>
+          <Text style={styles.smallNeutralButtonText}>Refresh</Text>
+        </Pressable>
+      )}
+    >
+      <View style={styles.stackGap}>
+        {loading ? <StatusBanner tone="info" text="Loading customer accounts." /> : null}
+        {error ? <StatusBanner tone="error" text="Customer accounts could not be loaded." /> : null}
+        {!loading && customers.length === 0 ? (
+          <Text style={styles.bodyText}>No customer accounts have been created yet.</Text>
+        ) : null}
+
+        {customers.map((customer) => (
+          <View key={customer.id} style={styles.adminCustomerCard}>
+            <View style={{ gap: 6 }}>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+                <View style={{ flex: 1, gap: 4 }}>
+                  <Text style={styles.stopTitle}>{customer.name}</Text>
+                  <Text style={styles.bodyText}>
+                    {customer.contactName || "No contact name"}{customer.contactPhone ? ` · ${customer.contactPhone}` : ""}
+                  </Text>
+                  {customer.contactEmail ? <Text style={styles.bodyText}>{customer.contactEmail}</Text> : null}
+                </View>
+                <StatusPill status={customer.status} />
+              </View>
+
+              <View style={styles.gridTwo}>
+                <MetricPill label="Trial ends" value={formatDate(customer.trialEndsAt)} />
+                <MetricPill label="Activated" value={formatDate(customer.activatedAt)} />
+              </View>
+
+              {customer.adminNotes ? <Text style={styles.bodyText}>Notes: {customer.adminNotes}</Text> : null}
+            </View>
+
+            <View style={styles.inlineRowWrap}>
+              <Pressable
+                style={({ pressed }) => [styles.smallSuccessButton, (pressed || updating) && styles.buttonPressed]}
+                onPress={() => onChangeStatus(customer.id, "trial")}
+                disabled={updating}
+              >
+                <Text style={styles.smallSuccessButtonText}>Activate trial</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.smallSuccessButton, (pressed || updating) && styles.buttonPressed]}
+                onPress={() => onChangeStatus(customer.id, "active")}
+                disabled={updating}
+              >
+                <Text style={styles.smallSuccessButtonText}>Mark active</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.smallWarningButton, (pressed || updating) && styles.buttonPressed]}
+                onPress={() => onChangeStatus(customer.id, "suspended")}
+                disabled={updating}
+              >
+                <Text style={styles.smallWarningButtonText}>Suspend</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.smallDangerButton, (pressed || updating) && styles.buttonPressed]}
+                onPress={() => onChangeStatus(customer.id, "closed")}
+                disabled={updating}
+              >
+                <Text style={styles.smallDangerButtonText}>Close</Text>
+              </Pressable>
+            </View>
+          </View>
+        ))}
+      </View>
+    </SectionCard>
+  );
+}
+
+function StatusPill({ status }: { status: CustomerStatus }) {
+  const config: Record<CustomerStatus, { label: string; backgroundColor: string; color: string; borderColor: string }> = {
+    pending: { label: "Pending", backgroundColor: "rgba(250, 204, 21, 0.14)", color: "#FDE68A", borderColor: "rgba(250, 204, 21, 0.42)" },
+    trial: { label: "Trial", backgroundColor: "rgba(56, 189, 248, 0.14)", color: "#BAE6FD", borderColor: "rgba(56, 189, 248, 0.42)" },
+    active: { label: "Active", backgroundColor: "rgba(34, 197, 94, 0.16)", color: "#BBF7D0", borderColor: "rgba(34, 197, 94, 0.42)" },
+    suspended: { label: "Suspended", backgroundColor: "rgba(251, 146, 60, 0.16)", color: "#FED7AA", borderColor: "rgba(251, 146, 60, 0.42)" },
+    closed: { label: "Closed", backgroundColor: "rgba(248, 113, 113, 0.16)", color: "#FECACA", borderColor: "rgba(248, 113, 113, 0.42)" },
+  };
+  const selected = config[status];
+
+  return (
+    <View style={[styles.statusPill, { backgroundColor: selected.backgroundColor, borderColor: selected.borderColor }]}>
+      <Text style={[styles.statusPillText, { color: selected.color }]}>{selected.label}</Text>
+    </View>
+  );
+}
+
 function SectionCard({ title, subtitle, children, editButton }: { title: string; subtitle: string; children: ReactNode; editButton?: ReactNode }) {
   return (
     <View style={styles.sectionCard}>
@@ -2639,6 +2829,26 @@ const styles = StyleSheet.create({
     color: "#F8FAFC",
     fontWeight: "600",
   },
+  adminCustomerCard: {
+    backgroundColor: "rgba(15, 23, 42, 0.74)",
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "#334155",
+    gap: 14,
+  },
+  statusPill: {
+    borderRadius: 999,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+  },
+  statusPillText: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "900",
+    textTransform: "uppercase",
+  },
   primaryButton: {
     backgroundColor: "#1E5EFF",
     borderRadius: 16,
@@ -2668,6 +2878,62 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 20,
     fontWeight: "700",
+  },
+  smallNeutralButton: {
+    backgroundColor: "rgba(148, 163, 184, 0.18)",
+    borderRadius: 999,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: "rgba(203, 213, 225, 0.24)",
+  },
+  smallNeutralButtonText: {
+    color: "#E2E8F0",
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "800",
+  },
+  smallSuccessButton: {
+    backgroundColor: "rgba(34, 197, 94, 0.16)",
+    borderRadius: 999,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: "rgba(34, 197, 94, 0.42)",
+  },
+  smallSuccessButtonText: {
+    color: "#BBF7D0",
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "800",
+  },
+  smallWarningButton: {
+    backgroundColor: "rgba(251, 146, 60, 0.16)",
+    borderRadius: 999,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: "rgba(251, 146, 60, 0.42)",
+  },
+  smallWarningButtonText: {
+    color: "#FED7AA",
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "800",
+  },
+  smallDangerButton: {
+    backgroundColor: "rgba(248, 113, 113, 0.16)",
+    borderRadius: 999,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: "rgba(248, 113, 113, 0.42)",
+  },
+  smallDangerButtonText: {
+    color: "#FECACA",
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "800",
   },
   buttonPressed: {
     opacity: 0.82,
