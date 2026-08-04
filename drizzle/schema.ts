@@ -2,9 +2,37 @@ import { mysqlTable, varchar, int, text, timestamp, boolean, mysqlEnum, double }
 import { sql } from "drizzle-orm";
 
 /**
- * Single-business schema for the first version.
- * Multi-business support will be added in a future phase.
+ * Multi-business schema foundation.
+ *
+ * Every operational record belongs to a business. The default business keeps
+ * the first live Dynamigo account working while customer accounts are added.
  */
+
+export const DEFAULT_BUSINESS_ID = "default-business";
+
+// ============================================================================
+// Businesses
+// ============================================================================
+
+export const businesses = mysqlTable("businesses", {
+  id: varchar("id", { length: 64 }).primaryKey(),
+  name: varchar("name", { length: 120 }).notNull(),
+  contactName: varchar("contactName", { length: 120 }),
+  contactEmail: varchar("contactEmail", { length: 320 }),
+  contactPhone: varchar("contactPhone", { length: 30 }),
+  status: mysqlEnum("status", ["pending", "trial", "active", "suspended", "closed"]).notNull().default("pending"),
+  trialEndsAt: timestamp("trialEndsAt"),
+  activatedAt: timestamp("activatedAt"),
+  suspendedAt: timestamp("suspendedAt"),
+  closedAt: timestamp("closedAt"),
+  adminNotes: text("adminNotes"),
+  stripeCustomerId: varchar("stripeCustomerId", { length: 120 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type Business = typeof businesses.$inferSelect;
+export type InsertBusiness = typeof businesses.$inferInsert;
 
 // ============================================================================
 // Users (Legacy OAuth)
@@ -16,7 +44,12 @@ export const users = mysqlTable("users", {
   name: text("name"),
   email: varchar("email", { length: 320 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
+  passwordHash: text("passwordHash"),
+  passwordResetTokenHash: varchar("passwordResetTokenHash", { length: 128 }),
+  passwordResetExpiresAt: timestamp("passwordResetExpiresAt"),
   role: mysqlEnum("role", ["user", "admin"]).notNull().default("user"),
+  accountStatus: mysqlEnum("accountStatus", ["pending", "active", "suspended", "closed"]).notNull().default("pending"),
+  passwordResetRequired: boolean("passwordResetRequired").notNull().default(false),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
@@ -26,11 +59,28 @@ export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
 // ============================================================================
+// Business Memberships
+// ============================================================================
+
+export const businessMemberships = mysqlTable("businessMemberships", {
+  id: varchar("id", { length: 64 }).primaryKey(),
+  businessId: varchar("businessId", { length: 64 }).notNull().default(DEFAULT_BUSINESS_ID),
+  userId: int("userId").notNull(),
+  role: mysqlEnum("role", ["owner", "manager", "driver", "staff"]).notNull().default("owner"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type BusinessMembership = typeof businessMemberships.$inferSelect;
+export type InsertBusinessMembership = typeof businessMemberships.$inferInsert;
+
+// ============================================================================
 // Business Settings (Single Business)
 // ============================================================================
 
 export const businessSettings = mysqlTable("businessSettings", {
   id: int("id").autoincrement().primaryKey(),
+  businessId: varchar("businessId", { length: 64 }).notNull().default(DEFAULT_BUSINESS_ID),
   businessName: varchar("businessName", { length: 120 }).notNull(),
   unitTownId: varchar("unitTownId", { length: 32 }).notNull().default("falkirk"),
   unitLabel: varchar("unitLabel", { length: 120 }).notNull().default("Main Storage Unit"),
@@ -54,6 +104,7 @@ export type InsertBusinessSettings = typeof businessSettings.$inferInsert;
 
 export const helpers = mysqlTable("helpers", {
   id: varchar("id", { length: 64 }).primaryKey(),
+  businessId: varchar("businessId", { length: 64 }).notNull().default(DEFAULT_BUSINESS_ID),
   name: varchar("name", { length: 120 }).notNull(),
   townId: varchar("townId", { length: 32 }).notNull(),
   weekdayAvailable: int("weekdayAvailable").notNull().default(1),
@@ -73,6 +124,7 @@ export type InsertHelper = typeof helpers.$inferInsert;
 
 export const jobs = mysqlTable("jobs", {
   id: varchar("id", { length: 64 }).primaryKey(),
+  businessId: varchar("businessId", { length: 64 }).notNull().default(DEFAULT_BUSINESS_ID),
   customerName: varchar("customerName", { length: 120 }).notNull(),
   contactName: varchar("contactName", { length: 120 }).notNull(),
   contactPhone: varchar("contactPhone", { length: 20 }).notNull(),
@@ -102,6 +154,7 @@ export type InsertJob = typeof jobs.$inferInsert;
 
 export const vans = mysqlTable("vans", {
   id: varchar("id", { length: 64 }).primaryKey(),
+  businessId: varchar("businessId", { length: 64 }).notNull().default(DEFAULT_BUSINESS_ID),
   driverName: varchar("driverName", { length: 120 }).notNull(),
   vehicleId: varchar("vehicleId", { length: 64 }).notNull(),
   startingTownId: varchar("startingTownId", { length: 32 }).notNull(),
@@ -122,6 +175,7 @@ export type InsertVan = typeof vans.$inferInsert;
 
 export const vehicles = mysqlTable("vehicles", {
   id: varchar("id", { length: 64 }).primaryKey(),
+  businessId: varchar("businessId", { length: 64 }).notNull().default(DEFAULT_BUSINESS_ID),
   name: varchar("name", { length: 120 }).notNull(),
   capacity: int("capacity").notNull().default(3),
   notes: text("notes"),
@@ -138,6 +192,7 @@ export type InsertVehicle = typeof vehicles.$inferInsert;
 
 export const routeOrders = mysqlTable("routeOrders", {
   id: varchar("id", { length: 64 }).primaryKey(),
+  businessId: varchar("businessId", { length: 64 }).notNull().default(DEFAULT_BUSINESS_ID),
   dateKey: varchar("dateKey", { length: 10 }).notNull(), // YYYY-MM-DD format
   stopIds: text("stopIds").notNull(), // JSON array of stop IDs in custom order
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -153,6 +208,7 @@ export type InsertRouteOrder = typeof routeOrders.$inferInsert;
 
 export const routeOrderHistory = mysqlTable("routeOrderHistory", {
   id: varchar("id", { length: 64 }).primaryKey(),
+  businessId: varchar("businessId", { length: 64 }).notNull().default(DEFAULT_BUSINESS_ID),
   dateKey: varchar("dateKey", { length: 10 }).notNull(), // YYYY-MM-DD format
   stopIds: text("stopIds").notNull(), // JSON array of stop IDs in custom order
   changeType: mysqlEnum("changeType", ["reorder", "reset"]).notNull(), // Type of change

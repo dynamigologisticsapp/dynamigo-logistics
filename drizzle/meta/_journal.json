@@ -85,6 +85,13 @@
       "when": 1784665020000,
       "tag": "0011_fractional_sofa_counts",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "5",
+      "when": 1785879600000,
+      "tag": "0012_customer_account_foundation",
+      "breakpoints": true
     }
   ]
 }

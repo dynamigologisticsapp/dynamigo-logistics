@@ -1,6 +1,6 @@
 import { drizzle } from "drizzle-orm/mysql2";
 import { eq, sql } from "drizzle-orm";
-import { InsertUser, users, jobs, helpers, businessSettings, vans, vehicles, routeOrders, routeOrderHistory, type Job, type Helper, type BusinessSettings, type Van, type Vehicle, type RouteOrder, type RouteOrderHistory } from "../drizzle/schema";
+import { InsertUser, businesses, users, jobs, helpers, businessSettings, vans, vehicles, routeOrders, routeOrderHistory, type Business, type Job, type Helper, type BusinessSettings, type Van, type Vehicle, type RouteOrder, type RouteOrderHistory } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -70,6 +70,17 @@ export async function upsertUser(user: InsertUser): Promise<void> {
       values.role = "admin";
       updateSet.role = "admin";
     }
+    if (user.accountStatus !== undefined) {
+      values.accountStatus = user.accountStatus;
+      updateSet.accountStatus = user.accountStatus;
+    } else if (user.openId === ENV.ownerOpenId) {
+      values.accountStatus = "active";
+      updateSet.accountStatus = "active";
+    }
+    if (user.passwordResetRequired !== undefined) {
+      values.passwordResetRequired = user.passwordResetRequired;
+      updateSet.passwordResetRequired = user.passwordResetRequired;
+    }
 
     if (!values.lastSignedIn) {
       values.lastSignedIn = new Date();
@@ -98,6 +109,71 @@ export async function getUserByOpenId(openId: string) {
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
 
   return result.length > 0 ? result[0] : undefined;
+}
+
+export type CustomerAccountStatus = "pending" | "trial" | "active" | "suspended" | "closed";
+
+export async function getCustomerAccounts(): Promise<Business[]> {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot get customer accounts: database not available");
+    return [];
+  }
+
+  try {
+    return await db.select().from(businesses);
+  } catch (error) {
+    console.error("[Database] Failed to get customer accounts:", error);
+    return [];
+  }
+}
+
+export async function updateCustomerAccountStatus(input: {
+  businessId: string;
+  status: CustomerAccountStatus;
+  trialDays?: number;
+  adminNotes?: string;
+}): Promise<Business | null> {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot update customer account: database not available");
+    return null;
+  }
+
+  const now = new Date();
+  const update: Partial<typeof businesses.$inferInsert> = {
+    status: input.status,
+    updatedAt: now,
+  };
+
+  if (input.adminNotes !== undefined) {
+    update.adminNotes = input.adminNotes;
+  }
+
+  if (input.status === "trial") {
+    const days = input.trialDays ?? 7;
+    update.trialEndsAt = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+    update.activatedAt = now;
+    update.suspendedAt = null;
+    update.closedAt = null;
+  } else if (input.status === "active") {
+    update.activatedAt = now;
+    update.suspendedAt = null;
+    update.closedAt = null;
+  } else if (input.status === "suspended") {
+    update.suspendedAt = now;
+  } else if (input.status === "closed") {
+    update.closedAt = now;
+  }
+
+  try {
+    await db.update(businesses).set(update).where(eq(businesses.id, input.businessId));
+    const result = await db.select().from(businesses).where(eq(businesses.id, input.businessId)).limit(1);
+    return result.length > 0 ? result[0] : null;
+  } catch (error) {
+    console.error("[Database] Failed to update customer account:", error);
+    return null;
+  }
 }
 
 // Job operations

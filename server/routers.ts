@@ -1,11 +1,12 @@
 import { getSessionCookieOptions } from "./_core/cookies";
 import { COOKIE_NAME } from "../shared/const";
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, router } from "./_core/trpc";
+import { adminProcedure, publicProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import { cancelJob, completeJob, createHelper, createJob, createVan, createVehicle, deleteHelper, deleteJob, deleteVan, deleteVehicle, getSnapshot, getSelectedVanId, getVans, getVehicles, resetOperations, selectVan, updateDayEndTime, updateDayStartTime, updateHelper, updateJob, updateSettings, updateVan, updateVehicle } from "./operations-store";
 import { buildEnhancedRoutePlan } from "./enhanced-route-planner";
 import { createGeoapifyAddressProvider } from "./geoapify-service";
+import { getCustomerAccounts, updateCustomerAccountStatus } from "./db";
 
 import { TOWN_OPTIONS, type RoutePlan } from "../shared/route-planner";
 
@@ -14,6 +15,7 @@ const jobTypeSchema = z.enum(["pickup", "delivery", "both"]);
 const jobStatusSchema = z.enum(["scheduled", "cancelled", "completed"]);
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const addressProvider = createGeoapifyAddressProvider();
+const customerAccountStatusSchema = z.enum(["pending", "trial", "active", "suspended", "closed"]);
 
 const jobInputSchema = z.object({
   customerName: z.string().min(1).max(120),
@@ -45,6 +47,19 @@ export const appRouter = router({
         success: true,
       } as const;
     }),
+  }),
+  admin: router({
+    customers: adminProcedure.query(() => getCustomerAccounts()),
+    updateCustomerStatus: adminProcedure
+      .input(
+        z.object({
+          businessId: z.string().min(1),
+          status: customerAccountStatusSchema,
+          trialDays: z.number().int().min(1).max(90).optional(),
+          adminNotes: z.string().max(1_000).optional(),
+        }),
+      )
+      .mutation(({ input }) => updateCustomerAccountStatus(input)),
   }),
   operations: router({
     snapshot: publicProcedure
